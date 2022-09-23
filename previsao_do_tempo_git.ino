@@ -1,36 +1,40 @@
-/***************************************************************************************************************************************
-                       WEATHER STATION WITH ESP32 - DHT 22 - NEXTION DISPLAY - HTTP SERVER 
-DIY ESP32 Projects
-****************************************************************************************************************************************/
+/*
+  Rui Santos
+  Complete project details at Complete project details at https://RandomNerdTutorials.com/esp32-http-get-open-weather-map-thingspeak-arduino/
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files.
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+*/
+
 #include <WiFi.h>
-#include <WebServer.h>
-#include <ArduinoJson.h>    //https://github.com/bblanchon/ArduinoJson
+#include <HTTPClient.h>
+#include <Arduino_JSON.h>
 #include "DHTesp.h"
 #include "time.h"
+#include <WebServer.h>
 
 #define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
-
-/*Put your SSID & Password*/
-const char* ssid = "0L4G";  // Enter SSID here
-const char* password = "eletronica";  //Enter Password here
-String CityID = "3451190"; //Enter your City ID from api.weathermap.org   
-String APIKEY = "e390bf21100c1b678be82d6000245002";  // your api_key
-#define LED_PIN 2
 WebServer server(80);
 
-// DHT Sensor
-uint8_t DHTPin = 4; 
-               
-// Initialize DHT sensor.               
-DHTesp dht;
-
+const char* ssid = "Vivo-Internet-54A4";
+const char* password = "CFC92198E76";
 
 int days,DST=0;
 const char* ntpServer = "pool.ntp.org"; 
 const long  gmtOffset_sec = 0;  //GMT+1 for Greece, Default gmtOffset_sec=3600 for Europe GMT
 const int   daylightOffset_sec = -3600*3;
 
+// Your Domain name with URL path or IP address with path
+String openWeatherMapApiKey = "46a756b1738cdb805ffe083cd5a2c6c4";
+// Example:
+//String openWeatherMapApiKey = "bd939aa3d23ff33d3c8f5dd1dd435";
 
+// Replace with your country code and city
+String city = "Rio de Janeiro";
+String countryCode = "BR";
 
 String final_time_string;
 String final_time_string2;
@@ -38,6 +42,10 @@ String final_date_string;
 String final_date_string2;
 String final_date_string3;
 
+uint8_t DHTPin = 4; 
+
+char last_letter;
+char last_letter2;
 
 float temperaturein = 0;
 float Temperature = 0;
@@ -46,70 +54,64 @@ float Humidity = 0;
 float backuptemp=0;   // backup temperature in case of nan error
 float backuphumi=0;   // backup humidity in case of nan error
   int weatherID = 0;    
-float hum = 0;
-float tempout=0;
+int humout = 0, tempout=0;
+int  iterations = 0;
 
-char* servername ="api.openweathermap.org";  // remote server we will connect to
-String result;
-String result2;
-int  iterations = 1800;
-String weatherDescription ="";
-String weatherLocation = "";
-char last_letter;
-char last_letter2;
+// THE DEFAULT TIMER IS SET TO 10 SECONDS FOR TESTING PURPOSES
+// For a final application, check the API call limits per hour/minute to avoid getting blocked/banned
+unsigned long lastTime = 0;
+// Timer set to 10 minutes (600000)
+//unsigned long timerDelay = 600000;
+// Set timer to 10 seconds (10000)
+unsigned long timerDelay = 10000;
+
+DHTesp dht;
+
+String jsonBuffer;
 
 void setup() {
-  
-  pinMode(LED_PIN, OUTPUT);
   Serial.begin(115200);
+  dht.setup(DHTPin, DHTesp::DHT22);    
 
-  dht.setup(DHTPin, DHTesp::DHT22);          
 
-  Serial.println("Connecting to ");
-  Serial.println(ssid);
-
-  //connect to your local wi-fi network
   WiFi.begin(ssid, password);
-
-  //check wi-fi is connected to wi-fi network
-  while (WiFi.status() != WL_CONNECTED)
-  {
-     delay(1000);
-     Serial.print(".");
+  Serial.println("Connecting");
+  while(WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
   Serial.println("");
-  Serial.println("WiFi connected..!");
-  Serial.print("Got IP: ");  
+  Serial.print("Connected to WiFi network with IP Address: ");
   Serial.println(WiFi.localIP());
 
   server.on("/", handle_OnConnect);
   server.onNotFound(handle_NotFound);
 
   server.begin(); //start server
-  Serial.println("HTTP server started");
+  //Serial.println("HTTP server started");
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer); //setup time
   printLocalTime(); //print time
+ 
+ // Serial.println("Timer set to 10 seconds (timerDelay variable), it will take 10 seconds before publishing the first reading.");
 }
 
-
-
-void loop() 
-{
-   server.handleClient();
-   printLocalTime();
-   printWeatherIcon(weatherID);
-   delay(2000);
+void loop() {
+  server.handleClient();
+  printLocalTime();
+  printWeatherIcon(weatherID);
+  delay(2000);
    
    if(iterations == 3)//We check for changes in weather every half an hour
-   {
-      getWeatherData();               
-      getWeatheropenweather();
-       
+   {  
+      Serial.println("-----------------ITERAÇÃO");
+      getWeather();
+      getOpenWeather();
       printWeatherIcon(weatherID);  
       iterations = 0;   
    }
 
+    getOpenWeather();
     sendopenweatherTemperatureToNextion(); //send outside temperature from openweather to nextion display
     sendopenweatherHumidityToNextion();    //send outside humidity from openweather to nextion display
     printfinaldate();                      //send date to nextion diplay
@@ -121,37 +123,135 @@ void loop()
     getHumidity();                        //measure inside humidity every 25 seconds
     sendHumidityToNextion();              //send inside humidity from openweather to nextion display
     iterations++;
+
+
+}
+
+
+void getWeather(){
+
+  // Send an HTTP GET request
+  //if ((millis() - lastTime) > timerDelay) {
+    // Check WiFi connection status
+    if(WiFi.status()== WL_CONNECTED){
+      String serverPath = "http://api.openweathermap.org/data/2.5/weather?q=" + city + "," + countryCode + "&APPID=" + openWeatherMapApiKey;
+      
+      jsonBuffer = httpGETRequest(serverPath.c_str());
+      //Serial.println(jsonBuffer);
+      JSONVar myObject = JSON.parse(jsonBuffer);
+  
+      // JSON.typeof(jsonVar) can be used to get the type of the var
+      if (JSON.typeof(myObject) == "undefined") {
+        //Serial.println("Parsing input failed!");
+        return;
+      }
+    
+      //Serial.print("Weather Icon: ");
+      //Serial.println(myObject["weather"][0]["id"]);
+      int idString = myObject["weather"][0]["id"];
+      weatherID = idString;
+
+      Serial.print("\nWeatherID: ");
+      Serial.print(weatherID);
+      endNextionCommand(); //We need that in order the nextion to recognise the first command after the serial print
+
+    }
+    else {
+      Serial.println("WiFi Disconnected");
+    }
+    lastTime = millis();
+  //}
+}
+
+void getOpenWeather(){
+
+   //if ((millis() - lastTime) > timerDelay) {
+    // Check WiFi connection status
+    if(WiFi.status()== WL_CONNECTED){
+      String serverPath = "http://api.openweathermap.org/data/2.5/weather?q=" + city + "," + countryCode + "&APPID=" + openWeatherMapApiKey;
+      
+      jsonBuffer = httpGETRequest(serverPath.c_str());
+      //Serial.println(jsonBuffer);
+      JSONVar myObject = JSON.parse(jsonBuffer);
+  
+      // JSON.typeof(jsonVar) can be used to get the type of the var
+      if (JSON.typeof(myObject) == "undefined") {
+        //Serial.println("Parsing input failed!");
+        return;
+      }
+
+    humout = myObject["main"]["humidity"]; // Extract local humidity now
+    Serial.print("\nhumi: ");
+    Serial.print(humout);
+    
+    int tOut = myObject["main"]["temp"]; // Extract local temp now
+    tempout = tOut - 273;
+    Serial.print("\ntempout: ");
+    Serial.print(tempout);
+    endNextionCommand();
+
+    }
+    else {
+      Serial.println("WiFi Disconnected");
+    }
+    lastTime = millis();
+  //}
+}
+
+void handle_OnConnect() {
+
+  Temperature = dht.getTemperature(); // Gets the values of the temperature
+  Humidity = dht.getHumidity(); // Gets the values of the humidity 
+
+  if (!isnan(temperaturein))
+  {
+      server.send(200, "text/html", SendHTML(temperaturein,temperaturein,humidityin)); 
+      //Serial.print("Temperature:");
+      //Serial.println(dht.getTemperature());
+  }
+  if (!isnan(temperaturein))
+  {
+      server.send(200, "text/html", SendHTML(backuptemp,backuptemp,backuphumi)); 
+     // Serial.print("Temperature:");
+      //Serial.println(dht.getTemperature());    
+  }
+}
+
+void handle_NotFound(){
+  server.send(404, "text/plain", "Not found");
 }
 
 
 void printLocalTime()
 {
+  String min_final;
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo))
   {
-    Serial.println("Failed to obtain time");
+    //Serial.println("Failed to obtain time");
     return;
   }
-  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+  //Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
   
 
+  if (timeinfo.tm_min<=9) final_time_string2 = "0" + String(timeinfo.tm_min); 
+  else final_time_string2 = String(timeinfo.tm_min);
 
-  
-  final_time_string=timeinfo.tm_hour;
-  final_time_string2=String(timeinfo.tm_min);
+  if (timeinfo.tm_hour<=9) final_time_string = "0" + String(timeinfo.tm_hour); 
+  else final_time_string = String(timeinfo.tm_hour);
 
 
-  final_date_string=timeinfo.tm_mday;
-  final_date_string2=timeinfo.tm_mon+1;
+  final_date_string = timeinfo.tm_mday;
+  final_date_string2 = timeinfo.tm_mon+1;
   final_date_string3=timeinfo.tm_year+1900;
 
   int length = final_date_string3.length();
   final_date_string3[length-1] = last_letter;   // we need to get the last two numbers of 2019 because of lack of space
   final_date_string3[length-2] = last_letter2;
-  Serial.println(last_letter);
-  Serial.println(last_letter2);
-  Serial.println(final_date_string3[length-1]);
-  Serial.println(final_date_string3[length-2]);
+  //Serial.println(last_letter);
+  //Serial.println(last_letter2);
+  //Serial.println(final_date_string3[length-1]);
+  //Serial.println(final_date_string3[length-2]);
   
 }
 
@@ -188,118 +288,33 @@ float getHumidity()
   }
 }
 
-//get forecast
-void getWeatherData() //client function to send/receive GET request data.
-{
-  String result ="";
+
+
+String httpGETRequest(const char* serverName) {
   WiFiClient client;
-  const int httpPort = 80;
-  if (!client.connect(servername, httpPort)) {
-        return;
-    }
-      // We now create a URI for the request
-    String url = "/data/2.5/forecast?id="+CityID+"&units=metric&cnt=1&APPID="+APIKEY;
-   
-       // This will send the request to the server
-    client.print(String("GET ") + url + " HTTP/1.1\r\n" +
-                 "Host: " + servername + "\r\n" +
-                 "Connection: close\r\n\r\n");
-                 
-    unsigned long timeout = millis();
-    while (client.available() == 0) 
-    {
-        if (millis() - timeout > 5000)
-        {
-            client.stop();
-            return;
-        }
-    }
-
-    // Read all the lines of the reply from server
-    while(client.available()) 
-    {
-        result = client.readStringUntil('\r');
-    }
-
-    result.replace('[', ' ');
-    result.replace(']', ' ');
-
-    char jsonArray [result.length()+1];
-    result.toCharArray(jsonArray,sizeof(jsonArray));
-    jsonArray[result.length() + 1] = '\0';
+  HTTPClient http;
     
-    StaticJsonBuffer<1024> json_buf;
-    JsonObject &root = json_buf.parseObject(jsonArray);
-    if (!root.success())
-    {
-      Serial.println("parseObject() failed");
-    }
-    
-    String location = root["city"]["name"];
-    String temperature = root["list"]["main"]["temp"];
-    String weather = root["list"]["weather"]["main"];
-    String description = root["list"]["weather"]["description"];
-    String idString = root["list"]["weather"]["id"];
-    String timeS = root["list"]["dt_txt"];
-    
-    weatherID = idString.toInt();
-    Serial.print("\nWeatherID: ");
-    Serial.print(weatherID);
-    endNextionCommand(); //We need that in order the nextion to recognise the first command after the serial print
-}
-
-
-//get current weather
-void getWeatheropenweather()
-{
-  String result2 ="";
-  WiFiClient client2;
-  const int httpPort2 = 80;
-  if (!client2.connect(servername, httpPort2)) 
-  {
-      return;
+  // Your Domain name with URL path or IP address with path
+  http.begin(client, serverName);
+  
+  // Send HTTP POST request
+  int httpResponseCode = http.GET();
+  
+  String payload = "{}"; 
+  
+  if (httpResponseCode>0) {
+   // Serial.print("HTTP Response code: ");
+    //Serial.println(httpResponseCode);
+    payload = http.getString();
   }
+  else {
+    //Serial.print("Error code: ");
+    //Serial.println(httpResponseCode);
+  }
+  // Free resources
+  http.end();
 
-  String url2 = "/data/2.5/weather?id="+CityID+"&units=metric"+"&APPID="+APIKEY;
-  client2.print(String("GET ") + url2 + " HTTP/1.1\r\n" +
-                 "Host: " + servername + "\r\n" +
-                 "Connection: close\r\n\r\n");
-   unsigned long timeout2 = millis();
-   while (client2.available() == 0) 
-   {
-      if (millis() - timeout2 > 5000) 
-      {
-          client2.stop();
-          return;
-      }
-   }
-
-    // Read all the lines of the reply from server
-    while(client2.available()) 
-    {
-        result2 = client2.readStringUntil('\r');
-    }
-
-    result2.replace('[', ' ');
-    result2.replace(']', ' ');
-
-    char jsonArray2 [result2.length()+1];
-    result2.toCharArray(jsonArray2,sizeof(jsonArray2));
-    jsonArray2[result2.length() + 1] = '\0';
-    StaticJsonBuffer<1024> json_buf2;
-    JsonObject &root2 = json_buf2.parseObject(jsonArray2);
-    
-    String  humi = root2["main"]["humidity"]; // Extract local humidity now
-    hum = humi.toInt();
-    Serial.print("\nhumi: ");
-    Serial.print(hum);
-    
-    String  temp = root2["main"]["temp"]; // Extract local temp now
-    tempout = temp.toInt();
-    Serial.print("\tempout: ");
-    Serial.print(tempout);
-
-    endNextionCommand();
+  return payload;
 }
 
 void showConnectingIcon()
@@ -333,15 +348,17 @@ void printfinaltime()
 }
 
 void sendopenweatherTemperatureToNextion()
-{
-  String command = "temperatureout.txt=\""+String(tempout,1)+"\"";
+{ 
+  int t = (int)tempout;
+  String command = "temperatureout.txt=\""+String(t)+".0"+"\"";
   Serial.print(command);
   endNextionCommand();
 }
 
 void sendopenweatherHumidityToNextion()
 {
-  String command = "humidityout.txt=\""+String(hum,1)+"\"";
+  int h = (int)humout;
+  String command = "humidityout.txt=\""+String(h)+".0"+"\"";
   Serial.print(command);
   endNextionCommand();
 }
@@ -384,6 +401,8 @@ void endNextionCommand()
   Serial.write(0xff);
   Serial.write(0xff);
 }
+
+
 
 void printWeatherIcon(int id)
 {
@@ -538,33 +557,6 @@ void drawFewClouds()
   String command = "weatherIcon.pic=5";
   Serial.print(command);
   endNextionCommand(); 
-}
-
-
-
-// HTTP server handling
-
-void handle_OnConnect() {
-
-  Temperature = dht.getTemperature(); // Gets the values of the temperature
-  Humidity = dht.getHumidity(); // Gets the values of the humidity 
-
-  if (!isnan(temperaturein))
-  {
-      server.send(200, "text/html", SendHTML(temperaturein,temperaturein,humidityin)); 
-      Serial.print("Temperature:");
-      Serial.println(dht.getTemperature());
-  }
-  if (!isnan(temperaturein))
-  {
-      server.send(200, "text/html", SendHTML(backuptemp,backuptemp,backuphumi)); 
-      Serial.print("Temperature:");
-      Serial.println(dht.getTemperature());    
-  }
-}
-
-void handle_NotFound(){
-  server.send(404, "text/plain", "Not found");
 }
 
 String SendHTML(float TempCstat,float TempFstat,float Humiditystat){
