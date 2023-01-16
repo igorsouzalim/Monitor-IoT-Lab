@@ -24,8 +24,8 @@ const char* password = "CFC92198E76";
 
 int days,DST=0;
 const char* ntpServer = "pool.ntp.org"; 
-const long  gmtOffset_sec = 0;  //GMT+1 for Greece, Default gmtOffset_sec=3600 for Europe GMT
-const int   daylightOffset_sec = -3600*3;
+const long  gmtOffset_sec = -10800;  //GMT+1 for Greece, Default gmtOffset_sec=3600 for Europe GMT
+const int   daylightOffset_sec = 0;
 
 // Your Domain name with URL path or IP address with path
 String openWeatherMapApiKey = "46a756b1738cdb805ffe083cd5a2c6c4";
@@ -104,7 +104,6 @@ void loop() {
    
    if(iterations == 3)//We check for changes in weather every half an hour
    {  
-      Serial.println("-----------------ITERAÇÃO");
       getWeather();
       getOpenWeather();
       printWeatherIcon(weatherID);  
@@ -185,6 +184,7 @@ void getOpenWeather(){
     Serial.print(humout);
     
     int tOut = myObject["main"]["temp"]; // Extract local temp now
+    if (tOut == 0) tOut=273;
     tempout = tOut - 273;
     Serial.print("\ntempout: ");
     Serial.print(tempout);
@@ -239,7 +239,6 @@ void printLocalTime()
 
   if (timeinfo.tm_hour<=9) final_time_string = "0" + String(timeinfo.tm_hour); 
   else final_time_string = String(timeinfo.tm_hour);
-
 
   final_date_string = timeinfo.tm_mday;
   final_date_string2 = timeinfo.tm_mon+1;
@@ -335,7 +334,7 @@ void showconnectionweatherlater1()
 
 void printfinaldate()
 {
-   String command2 = "date.txt=\""+String(final_date_string+"/"+final_date_string2+"/"+"22")+"\"";
+   String command2 = "date.txt=\""+String(final_date_string+"/"+final_date_string2+"/"+"23")+"\"";
    Serial.print(command2);
    endNextionCommand();
 }
